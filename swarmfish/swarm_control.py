@@ -79,7 +79,7 @@ class State:
         return np.linalg.norm(self.pos - other.pos)
 
     def get_distance_coupled(self, other: 'State', params: SwarmParams) -> float:
-        return np.sqrt(np.sum((self.pos[0:2] - other.pos[0:2])**2) + ((self.pos[2] - other.pos[2]) / params.sigma_z)**2)
+        return np.sqrt((self.pos[0] - other.pos[0])**2 + (self.pos[1] - other.pos[1])**2 + ((self.pos[2] - other.pos[2]) / params.sigma_z)**2)
 
     def get_speed_2d(self) -> float:
         return np.linalg.norm(self.speed[0:2])
@@ -154,7 +154,7 @@ class SwarmCommands:
 ## interaction functions
 ##
 
-def interaction_wall(agent: State, params: SwarmParams, wall: (float, float) = None, z_min: float = None, z_max: float = None) -> SwarmCommands:
+def interaction_wall(agent: State, params: SwarmParams, wall: tuple[float, float] = None, z_min: float = None, z_max: float = None) -> SwarmCommands:
     ''' Interaction with a wall defined by a distance and relative orientation
         and with floor and ceiling
     '''
@@ -214,7 +214,7 @@ def interaction_nav(agent: State, params: SwarmParams, direction: float = None, 
         also add the vertical speed damping
     '''
     cmd = SwarmCommands()
-    if direction is not None and agent.get_speed_2d() > 0.5:
+    if direction is not None:# and agent.get_speed_2d() > 0.5:
         cmd.delta_course = params.y_nav * math.atan(direction - agent.get_course(params.use_heading))
     if altitude is not None:
         cmd.delta_vz += -params.y_z_nav * math.tanh((agent.pos[2] - altitude) / params.a_z)
@@ -245,7 +245,7 @@ def interaction_intruder(agent: State, params: SwarmParams, other: State) -> Swa
     dvz = params.y_z_intruder * math.tanh(dz / params.a_z) * math.exp(-(dij / params.l_z)**2)
     return SwarmCommands(delta_course=dyaw, delta_speed=dv, delta_vz=dvz)
 
-def interaction_obstacle(agent: State, params: SwarmParams, obstacle: (float, float) = None) -> SwarmCommands:
+def interaction_obstacle(agent: State, params: SwarmParams, obstacle: tuple[float, float] = None) -> SwarmCommands:
     ''' Interaction with an obstacle defined by a distance and relative orientation
     '''
     cmd = SwarmCommands()
@@ -275,19 +275,20 @@ def compute_interactions(
         nb_influent: int = 1,
         direction: float = None,
         altitude: float = None,
-        wall: (float, float) = None,
+        wall: tuple[float, float] = None,
         z_min: float = None,
         z_max: float = None,
         obstacles: list[(float, float)] = [],
         intruders: list[State] = []) -> tuple[SwarmCommands, list[tuple[str, str]]]:
     # closest wall distance
-    walls = np.array([ w[0] for w in [wall] + obstacles if w is not None ])
+    closest_wall = np.min(np.array([ w[0] for w in [wall] + obstacles if w is not None ]), initial=100.)
     # social
     social = []
     for neighbor in neighbors:
-        social.append((agent.name, neighbor.name, interaction_social(agent, params, neighbor, dt=1., r_w=np.min(walls, initial=100.))))
+        social.append((agent.name, neighbor.name, interaction_social(agent, params, neighbor, dt=1., r_w=closest_wall)))
+    speed_2d = agent.get_speed_2d()
     def compute_influence(x):
-        return math.sqrt(x.delta_speed**2 + (x.delta_course * agent.get_speed_2d())**2 + x.delta_vz**2)
+        return math.sqrt(x.delta_speed**2 + (x.delta_course * speed_2d)**2 + x.delta_vz**2)
         #return np.fabs(x.delta_course)
     influential = sorted(social, key=lambda s: compute_influence(s[2]), reverse=True)
     d_social = SwarmCommands()

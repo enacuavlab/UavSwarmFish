@@ -84,9 +84,12 @@ def load_polygons_from_json(file_name: str) -> list[PolygonObstacle]:
 
 # data processing functions
 
-def compute_quantification(trajectories: np.ndarray, skip: int = 0) -> np.ndarray:
+def compute_quantification(positions: np.ndarray, velocities: np.ndarray, skip: int = 0) -> np.ndarray:
     ''' Compute quantification (polarization, dispersion, milling) of the group
         and its fluctuations
+
+        positions = [nb_uav, 3, nb_steps] array
+        velocities = [nb_uav, 3, nb_steps] array
 
         #0: dispersion
         #1: polarization
@@ -96,13 +99,13 @@ def compute_quantification(trajectories: np.ndarray, skip: int = 0) -> np.ndarra
         #5: fluctuation of milling
 
     '''
-    nb_steps = trajectories.shape[2]
-    nb_uav = trajectories.shape[0]  #TODO check idx
+    nb_steps = positions.shape[2] - skip
+    nb_uav = positions.shape[0]
 
-    pos = trajectories[:,0:2,:]
+    pos = positions[:,:,skip:]
     pos_bary = np.mean(pos, axis=0)
     dpos = pos - pos_bary
-    vel = trajectories[:,10:12,:]
+    vel = velocities[:,:,skip:]
     vel_bary = np.mean(vel, axis=0)
     dvel = vel - vel_bary
 
@@ -118,19 +121,22 @@ def compute_quantification(trajectories: np.ndarray, skip: int = 0) -> np.ndarra
     data[:,2] = np.fabs(np.sum(np.sin(theta - phi), axis=0) / nb_uav)
 
     quant = np.zeros(6, dtype=np.float64)
-    quant[0] = np.mean(data[skip:, 0])
-    quant[1] = np.mean(data[skip:, 1])
-    quant[2] = np.mean(data[skip:, 2])
-    quant[3] = np.mean(data[skip:, 0] ** 2) - np.mean(data[skip:, 0]) ** 2
-    quant[4] = np.mean(data[skip:, 1] ** 2) - np.mean(data[skip:, 1]) ** 2
-    quant[5] = np.mean(data[skip:, 2] ** 2) - np.mean(data[skip:, 2]) ** 2
+    quant[0] = np.mean(data[:, 0])
+    quant[1] = np.mean(data[:, 1])
+    quant[2] = np.mean(data[:, 2])
+    quant[3] = np.mean(data[:, 0] ** 2) - np.mean(data[:, 0]) ** 2
+    quant[4] = np.mean(data[:, 1] ** 2) - np.mean(data[:, 1]) ** 2
+    quant[5] = np.mean(data[:, 2] ** 2) - np.mean(data[:, 2]) ** 2
     return quant
 
-def compute_quantification_from_log(filename: str, skip_ratio: float = 0.5) -> np.ndarray:
+def compute_quantification_from_log(filename: str, skip_ratio: float = 0.5, pos_idx: int = 0, vel_idx: int = 3) -> np.ndarray:
     data = np.load(filename)
     traj = data['states']
     size = traj.shape[2]
-    return compute_quantification(traj, int(size * skip_ratio))
+    return compute_quantification(traj[:,pos_idx:pos_idx+3,:], traj[:,vel_idx:vel_idx+3,:], int(size * skip_ratio))
+
+def compute_quantification_from_dronesim_log(filename: str, skip_ratio: float = 0.5) -> np.ndarray:
+    return compute_quantification_from_log(filename, skip_ratio, 0, 10)
 
 def plot_traj_from_log(filename: str):
     import matplotlib.pyplot as plt
@@ -140,5 +146,16 @@ def plot_traj_from_log(filename: str):
     nb_uav = traj.shape[0]
     for i in range(nb_uav):
         plt.plot(traj[i,0,:], traj[i,1,:])
+    plt.show()
+
+def plot_traj_3D_from_log(filename: str):
+    import matplotlib.pyplot as plt
+
+    data = np.load(filename)
+    traj = data['states']
+    nb_uav = traj.shape[0]
+    ax = plt.figure().add_subplot(projection='3d')
+    for i in range(nb_uav):
+        ax.plot(traj[i,0,:], traj[i,1,:], traj[i,2,:], )
     plt.show()
 

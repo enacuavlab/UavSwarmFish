@@ -13,3 +13,8 @@ Matthieu Verdoucq, Clément Sire, Ramón Escobedo, Guy Theraulaz, Gautier Hatten
 ```bash
 pip3 install -e .
 ```
+## Compiling with Cython
+
+```bash
+python setup.py build_ext --inplace
+```

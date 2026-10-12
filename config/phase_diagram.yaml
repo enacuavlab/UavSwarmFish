@@ -1,0 +1,52 @@
+Agent:
+  SwarmParams:
+    y_w: 1.5 #2.5
+    l_w: 2.5
+    e1_w: 1.0
+    e2_w: 0.25
+    y_z_w: 0.5
+    dz_w: 1.
+
+    y_att: 0.35
+    l_att: 10.0 #9.75
+    d0_att: 4.
+    a_att: 0.33
+    b1_att: 0. #0.48
+    b2_att: 0. #0.13
+
+    y_ali: 0.2
+    l_ali: 3.
+    d0_ali: 2.
+    a_ali: 0. #0.2
+    b1_ali: 0.6
+    b2_ali: 0. #0.32
+
+    y_acc: 0.5
+    l_acc: 2.5
+    d0_v: 3.5
+
+    y_z: 0.2
+    l_z: 5.
+    a_z: 1.
+    d0_z: 2.
+    sigma_z: 2.
+
+    y_nav: 0.5
+    y_z_nav: 0.5
+    y_vz_nav: 0.1
+
+    y_intruder: 1.2
+    y_z_intruder: 1.
+    l_intruder: 4.
+
+    y_obs: 1.
+    t_obs: 3.
+    e1_obs: 1.4
+    e2_obs: 0. #0.4
+
+  NavParams:
+    max_velocity: 2.0
+    min_velocity: 0.
+    zmax: 15.
+    zmin: -5.
+
