@@ -1,53 +1,49 @@
 import numpy as np
 import math
 from dataclasses import dataclass
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 @dataclass
 class SwarmParams:
-    # wall
-    y_w: float
-    l_w: float
-    e1_w: float
-    e2_w: float
-    y_z_w: float
-    dz_w: float
     # attraction
     y_att: float
     l_att: float
-    d0_att: float
+    d_att: float
     a_att: float
-    b1_att: float
-    b2_att: float
     # alignment
     y_ali: float
     l_ali: float
-    d0_ali: float
     a_ali: float
-    b1_ali: float
-    b2_ali: float
     # speed
-    y_acc: float
-    l_acc: float
-    d0_v: float
+    y_v: float
+    l_v: float
+    a_v: float
     # vertical
     y_z: float
     l_z: float
+    d_z: float
     a_z: float
-    d0_z: float
     sigma_z: float
     # nav
     y_nav: float
     y_z_nav: float
-    y_vz_nav: float
+    # y_vz_nav: float
     # intruders
     y_intruder: float
-    y_z_intruder: float
     l_intruder: float
+    a_intruder: float
+    y_z_intruder: float
+    l_z_intruder: float
+    d_z_intruder: float
     # obstacles
     y_obs: float
-    t_obs: float
-    e1_obs: float
-    e2_obs: float
+    y_v_obs: float
+    l_obs: float
+    a_obs: float
+    v0_obs: float
 
     use_heading: bool = False
 
@@ -80,6 +76,11 @@ class State:
 
     def get_distance_coupled(self, other: 'State', params: SwarmParams) -> float:
         return np.sqrt((self.pos[0] - other.pos[0])**2 + (self.pos[1] - other.pos[1])**2 + ((self.pos[2] - other.pos[2]) / params.sigma_z)**2)
+
+    def get_delta_z(self, other: 'State') -> float:
+        ''' Vertical position difference
+        '''
+        return (other.pos[2] - self.pos[2])
 
     def get_speed_2d(self) -> float:
         return np.linalg.norm(self.speed[0:2])
@@ -125,6 +126,37 @@ class State:
         return out
 
 @dataclass
+class SwarmAccel:
+    a_bx: float = 0.
+    a_by: float = 0.
+    a_z: float = 0.
+
+    def __add__(self, other):
+        return SwarmAccel(
+                a_bx = self.a_bx + other.a_bx,
+                a_by = self.a_by + other.a_by,
+                a_z = self.a_z + other.a_z)
+
+    def __iadd__(self, other):
+        self.a_bx += other.a_bx
+        self.a_by += other.a_by
+        self.a_z += other.a_z
+        return SwarmAccel(self.a_bx, self.a_by, self.a_z)
+
+    def norm2(self):
+        return a_bx*a_bx + a_by*a_by + a_z*a_z
+
+    def norm(self):
+        return math.sqrt(self.norm2())
+
+    def __str__(self):
+        out = f'Accel: '
+        out += f'a_bx= {self.a_bx:0.2f} '
+        out += f'a_by= {self.a_by:0.2f} '
+        out += f'a_z= {self.a_z:0.2f}'
+        return out
+
+@dataclass
 class SwarmCommands:
     delta_course: float = 0.
     delta_speed: float = 0.
@@ -154,60 +186,53 @@ class SwarmCommands:
 ## interaction functions
 ##
 
-def interaction_wall(agent: State, params: SwarmParams, wall: tuple[float, float] = None, z_min: float = None, z_max: float = None) -> SwarmCommands:
-    ''' Interaction with a wall defined by a distance and relative orientation
-        and with floor and ceiling
-    '''
-    cmd = SwarmCommands()
-    if wall is not None:
-        dist, angle = wall
-        fw = math.exp(-(dist / params.l_w)**2)
-        ow = params.e1_w * math.cos(angle) + params.e2_w * math.cos(2. * angle)
-        cmd.delta_course = params.y_w * math.sin(angle) * (1. + ow) * fw
-    if z_min is not None:
-        dz = agent.pos[2] - z_min
-        cmd.delta_vz += 2. * params.y_z_w / (1. + math.exp((dz - params.dz_w) / params.dz_w))
-    if z_max is not None:
-        dz = z_max - agent.pos[2]
-        cmd.delta_vz +=  - 2. * params.y_z_w / (1. + math.exp((dz - params.dz_w) / params.dz_w))
-    #TODO a speed variation to slow down on obstacles ?
-    return cmd
+def anisotropic(a: float, psi: float) -> float:
+    return (1. + a * math.cos(psi)) / (1. + a)
 
-def interaction_social(agent: State, params: SwarmParams, other: State, dt: float, r_w: float = 100.) -> SwarmCommands:
+def sign(x: float) -> float:
+    if x < 0.:
+        return -x
+    else:
+        return x
+
+def interaction_social(agent: State, params: SwarmParams, other: State, nb_neighbors: int) -> SwarmAccel:
     ''' Social interaction of alignment, attraction, speed and vertical speed
-        with wall distance r_w for attenuation
     '''
     dij = agent.get_distance_3d(other)
     if dij < 1e-3:
-        return SwarmCommands() # too close to do something, better avoid division by zero
-    dij_c = agent.get_distance_coupled(other, params)          # distance between agents
+        return SwarmAccel() # too close to do something, better avoid division by zero
+    dij_c = agent.get_distance_coupled(other, params)        # distance between agents
     dphi = agent.get_course_diff(other, params.use_heading)  # course/heading difference
     psi = agent.get_viewing_angle(other, params.use_heading) # viewing angle
     c_psi = math.cos(psi)
     s_psi = math.sin(psi)
-    print(f"attrib {agent.name} <-> {other.name} | dij={dij:0.2f}  dphi={np.degrees(dphi):0.2f} psi={np.degrees(psi):0.2f}")
+    c_dphi = math.cos(dphi)
+    s_dphi = math.sin(dphi)
+    delta_z = agent.get_delta_z(other)
+    v_h_j = other.get_speed_2d()
+    v_h_i = agent.get_speed_2d()
+    logger.debug(f"attrib {agent.name} <-> {other.name} | dij={dij:0.2f}  dphi={np.degrees(dphi):0.2f} psi={np.degrees(psi):0.2f} dz={delta_z:0.2f}")
 
-    attenuation = 1. - math.exp(-(r_w/params.l_w)**2)        # wall attenuation
-    # alignment
-    f_ali = params.y_ali * (dij_c / params.d0_ali + 1.) * math.exp(-(dij_c / params.l_ali)**2) * math.sin(dphi) * (1. + params.b1_ali * c_psi) * attenuation
     # attraction
-    f_att = params.y_att * ((dij_c / params.d0_att - 1.) / (1. + (dij_c / params.l_att)**2)) * (1. + params.a_att * c_psi) * attenuation
+    f_att = params.y_att * ((dij_c - params.d_att) / params.d_att) / (1. + (dij_c / params.l_att)**2) * anisotropic(params.a_att, psi)
+    # alignment
+    f_ali = params.y_ali * math.exp(-(dij_c / params.l_ali)**2) * anisotropic(params.a_ali, psi)
+    # vertical
+    f_z = params.y_z * ((delta_z - sign(delta_z)*params.d_z) / params.d_z) * math.exp(-(dij_c / params.l_z)**2) * anisotropic(params.a_z, psi)
+    # speed
+    f_v_base = params.y_v * math.exp(-(dij_c / params.l_v)**2) * anisotropic(params.a_v, psi) / float(nb_neighbors)
+    f_v_x = f_v_base * (v_h_j * c_dphi - v_h_i)
+    f_v_y = f_v_base * (v_h_j * s_dhpi)
+    f_v_z = f_v_base * (other.get_vz() - agent.get_vz())
 
-    e_para = np.array([c_psi, s_psi, 0.])
-    e_perp = np.array([-s_psi, c_psi, 0.])
-    e_z = np.array([0., 0., 1.])
-    e_ij = (other.pos - agent.pos) / dij
-    f_social = f_ali + f_att
+    logger.debug(f"  f_att {f_att:0.3f} | f_ali {f_ali:0.3f} | f_z {f_z:0.3f} | f_v [{f_v_x:0.3f}, {f_v_y:0.3f}, {f_v_z:0.3f}]")
 
-    dyaw = f_social * np.dot(e_perp, e_ij) * (dt / max(agent.get_speed_2d(), 0.1))
-    dv = f_social * np.dot(e_para, e_ij) * dt
-    dvz = f_social * np.dot(e_z, e_ij) * dt
-    #print(f"   att {params.d0_att:.2f} {dij:0.2f} | {(dij / params.d0_att - 1.):0.4f} | f(dij)={f_att:0.2f} o(psi)={o_att:0.2f} e(dphi)={e_att:0.2f}")
-    #print(f"   ali {params.d0_ali:.2f} {dij:0.2f} | {(dij / params.d0_ali + 1.):0.4f} | f(dij)={f_ali:0.2f} o(dphi)={o_ali:0.2f} e(psi)={e_ali:0.2f}")
-    #print(f'   dyaw_att {np.degrees(dyaw_att):0.2f} | dyaw_ali {np.degrees(dyaw_ali):0.2f} | social {np.degrees(dyaw_att+dyaw_ali):.2f}')
-    print(f"  f_ali {f_ali:0.3f}, f_att {f_att:0.3f} | dyaw {np.degrees(dyaw):0.2f} | dv {dv:0.2f} | dvz {dvz:0.2f}")
+    a_bx = f_att * c_psi + f_v_x
+    a_by = f_att * s_psi + f_ali * s_dphi + f_v_y
+    a_z = f_z + f_v_z
+    logger.debug(f"  accel = [ {a_bx:0.3f}, {a_by:0.3f}, {a_z:0.3f} ]")
 
-    return SwarmCommands(delta_course=dyaw, delta_speed=dv, delta_vz=dvz)
+    return SwarmAccel(a_bx=a_bx, a_by=a_by, a_z=a_z)
 
 def interaction_nav(agent: State, params: SwarmParams, direction: float = None, altitude: float = None) -> tuple[float, float]:
     ''' Navigation interaction with a specified direction and altitude
@@ -265,6 +290,25 @@ def interaction_obstacle(agent: State, params: SwarmParams, obstacle: tuple[floa
     cmd.delta_course = F_obs * math.sin(angle) / max(speed, 0.1)
     cmd.delta_speed = - F_obs * math.cos(angle)
     #print(f'obs delta {np.degrees(cmd.delta_course):.2f}, {tau}, {fw}, {ow}')
+    return cmd
+
+def interaction_wall(agent: State, params: SwarmParams, wall: tuple[float, float] = None, z_min: float = None, z_max: float = None) -> SwarmCommands:
+    ''' Interaction with a wall defined by a distance and relative orientation
+        and with floor and ceiling
+    '''
+    cmd = SwarmCommands()
+    if wall is not None:
+        dist, angle = wall
+        fw = math.exp(-(dist / params.l_w)**2)
+        ow = params.e1_w * math.cos(angle) + params.e2_w * math.cos(2. * angle)
+        cmd.delta_course = params.y_w * math.sin(angle) * (1. + ow) * fw
+    if z_min is not None:
+        dz = agent.pos[2] - z_min
+        cmd.delta_vz += 2. * params.y_z_w / (1. + math.exp((dz - params.dz_w) / params.dz_w))
+    if z_max is not None:
+        dz = z_max - agent.pos[2]
+        cmd.delta_vz +=  - 2. * params.y_z_w / (1. + math.exp((dz - params.dz_w) / params.dz_w))
+    #TODO a speed variation to slow down on obstacles ?
     return cmd
 
 
