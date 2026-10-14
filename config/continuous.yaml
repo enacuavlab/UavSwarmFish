@@ -1,6 +1,6 @@
 Agent:
   SwarmParams:
-    y_att: 0.35
+    y_att: 0.5
     l_att: 6.0
     d_att: 3.0
     a_att: 0.3
@@ -9,7 +9,7 @@ Agent:
     l_ali: 3.0
     a_ali: 0. #0.2
 
-    y_v: 0.2
+    y_v: 0.3
     l_v: 3.0
     a_v: 0.0
 
@@ -19,8 +19,8 @@ Agent:
     a_z: 0.0
     sigma_z: 1.
 
-    y_nav: 0.5
-    y_z_nav: 0.5
+    y_nav: 0.15
+    y_z_nav: 0.15
     l_z_nav: 1.0
 
     y_intruder: 1.0

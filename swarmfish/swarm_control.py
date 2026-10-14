@@ -326,6 +326,7 @@ def compute_interactions(
     walls = obstacles
     if wall is not None:
         walls += [wall]
+    walls = [ w for w in walls if w is not None ]
     closest_wall = np.min(np.array([ w[0] for w in walls]), initial=100.)
     # social
     social = []
