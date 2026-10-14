@@ -30,6 +30,7 @@ class SwarmParams:
     # nav
     y_nav: float
     y_z_nav: float
+    l_z_nav: float
     # y_vz_nav: float
     # intruders
     y_intruder: float
@@ -44,6 +45,8 @@ class SwarmParams:
     l_obs: float
     a_obs: float
     v0_obs: float
+    y_z_obs: float
+    l_z_obs: float
 
     use_heading: bool = False
 
@@ -80,6 +83,8 @@ class State:
     def get_delta_z(self, other: 'State') -> float:
         ''' Vertical position difference
         '''
+        if self.name=="1":
+            print(self.pos, other.pos)
         return (other.pos[2] - self.pos[2])
 
     def get_speed_2d(self) -> float:
@@ -191,16 +196,16 @@ def anisotropic(a: float, psi: float) -> float:
 
 def sign(x: float) -> float:
     if x < 0.:
-        return -x
+        return -1.
     else:
-        return x
+        return 1.
 
-def interaction_social(agent: State, params: SwarmParams, other: State, nb_neighbors: int) -> SwarmAccel:
+def interaction_social(agent: State, params: SwarmParams, other: State, nb_neighbors: int) -> tuple[SwarmAccel, float]:
     ''' Social interaction of alignment, attraction, speed and vertical speed
     '''
     dij = agent.get_distance_3d(other)
     if dij < 1e-3:
-        return SwarmAccel() # too close to do something, better avoid division by zero
+        return SwarmAccel(), 0. # too close to do something, better avoid division by zero
     dij_c = agent.get_distance_coupled(other, params)        # distance between agents
     dphi = agent.get_course_diff(other, params.use_heading)  # course/heading difference
     psi = agent.get_viewing_angle(other, params.use_heading) # viewing angle
@@ -211,105 +216,99 @@ def interaction_social(agent: State, params: SwarmParams, other: State, nb_neigh
     delta_z = agent.get_delta_z(other)
     v_h_j = other.get_speed_2d()
     v_h_i = agent.get_speed_2d()
-    logger.debug(f"attrib {agent.name} <-> {other.name} | dij={dij:0.2f}  dphi={np.degrees(dphi):0.2f} psi={np.degrees(psi):0.2f} dz={delta_z:0.2f}")
+    logger.debug(f"Social {agent.name} <-> {other.name} | dij={dij:0.2f}  dphi={np.degrees(dphi):0.2f} psi={np.degrees(psi):0.2f} dz={delta_z:0.2f}")
 
     # attraction
     f_att = params.y_att * ((dij_c - params.d_att) / params.d_att) / (1. + (dij_c / params.l_att)**2) * anisotropic(params.a_att, psi)
     # alignment
-    f_ali = params.y_ali * math.exp(-(dij_c / params.l_ali)**2) * anisotropic(params.a_ali, psi)
+    f_ali = params.y_ali * math.exp(-(dij_c / params.l_ali)**2) * s_dphi * anisotropic(params.a_ali, psi)
     # vertical
     f_z = params.y_z * ((delta_z - sign(delta_z)*params.d_z) / params.d_z) * math.exp(-(dij_c / params.l_z)**2) * anisotropic(params.a_z, psi)
     # speed
-    f_v_base = params.y_v * math.exp(-(dij_c / params.l_v)**2) * anisotropic(params.a_v, psi) / float(nb_neighbors)
+    f_v_base = params.y_v * math.exp(-(dij_c / params.l_v)**2) * anisotropic(params.a_v, psi) / float(max(nb_neighbors,1))
     f_v_x = f_v_base * (v_h_j * c_dphi - v_h_i)
-    f_v_y = f_v_base * (v_h_j * s_dhpi)
+    f_v_y = f_v_base * (v_h_j * s_dphi)
     f_v_z = f_v_base * (other.get_vz() - agent.get_vz())
-
     logger.debug(f"  f_att {f_att:0.3f} | f_ali {f_ali:0.3f} | f_z {f_z:0.3f} | f_v [{f_v_x:0.3f}, {f_v_y:0.3f}, {f_v_z:0.3f}]")
 
     a_bx = f_att * c_psi + f_v_x
-    a_by = f_att * s_psi + f_ali * s_dphi + f_v_y
+    a_by = f_att * s_psi + f_ali + f_v_y
     a_z = f_z + f_v_z
-    logger.debug(f"  accel = [ {a_bx:0.3f}, {a_by:0.3f}, {a_z:0.3f} ]")
 
-    return SwarmAccel(a_bx=a_bx, a_by=a_by, a_z=a_z)
+    influence = math.sqrt(f_att**2 + f_ali**2 + f_z**2 + f_v_x**2 + f_v_y**2 + f_v_z**2)
+    logger.debug(f"  accel = [ {a_bx:0.3f}, {a_by:0.3f}, {a_z:0.3f} ], influence = {influence:0.3f}")
 
-def interaction_nav(agent: State, params: SwarmParams, direction: float = None, altitude: float = None) -> tuple[float, float]:
+    return SwarmAccel(a_bx=a_bx, a_by=a_by, a_z=a_z), influence
+
+def interaction_nav(agent: State, params: SwarmParams, speed: float, direction: float = None, altitude: float = None) -> SwarmAccel:
     ''' Navigation interaction with a specified direction and altitude
         also add the vertical speed damping
     '''
-    cmd = SwarmCommands()
-    if direction is not None:# and agent.get_speed_2d() > 0.5:
-        cmd.delta_course = params.y_nav * math.atan(direction - agent.get_course(params.use_heading))
+    phi_nav = direction
+    if phi_nav is None:
+        phi_nav = agent.get_course(params.use_heading)
+    vz_nav = 0.
     if altitude is not None:
-        cmd.delta_vz += -params.y_z_nav * math.tanh((agent.pos[2] - altitude) / params.a_z)
-    # add vertical speed damping
-    speed = agent.get_speed_3d()
-    if speed > 0.1:
-        cmd.delta_vz += - params.y_vz_nav * agent.get_vz() / speed
-    #TODO speed attraction to setpoint
-    return cmd
+        vz_nav = params.y_z_nav * math.tanh((altitude - agent.pos[2]) / params.l_z_nav)
+    a_bx = params.y_nav * (speed * math.cos(phi_nav - agent.get_course(params.use_heading)) - agent.get_speed_2d())
+    a_by = params.y_nav * (speed * math.sin(phi_nav - agent.get_course(params.use_heading)))
+    a_z = params.y_nav * (vz_nav - agent.get_vz())
+    logger.debug(f"Nav accel = [ {a_bx:0.3f}, {a_by:0.3f}, {a_z:0.3f} ]")
 
-def interaction_intruder(agent: State, params: SwarmParams, other: State) -> SwarmCommands:
+    return SwarmAccel(a_bx=a_bx, a_by=a_by, a_z=a_z)
+
+def interaction_intruder(agent: State, params: SwarmParams, other: State) -> SwarmAccel:
     ''' Interaction of repulsion with an intruder
     '''
-    dij = agent.get_distance_coupled(other, params)
-    dphi = agent.get_course_diff(other, params.use_heading)
+    # horizontal repulsion
+    dij_c = agent.get_distance_coupled(other, params)
     psi = agent.get_viewing_angle(other, params.use_heading)
     psi_int = other.get_viewing_angle(agent, params.use_heading)
     speed = agent.get_speed_2d()
     speed_int = other.get_speed_2d()
     relative_vel_ratio = (speed * math.cos(psi) + speed_int * math.cos(psi_int)) / max(speed + speed_int, 0.1) 
-    #print(f'{agent.name} -> {other.name}: {relative_vel_ratio:0.2f} | {np.degrees(psi):0.2f} {np.degrees(psi_int):0.2f}')
-    #FIXME use dphi or psi for even function ?
-    #dyaw = -params.y_intruder * math.exp(-(dij / params.l_intruder)**2) * (1. + params.e1_w * math.cos(psi)) * math.sin(dphi)
-    F_rep = params.y_intruder * math.exp(-(dij / params.l_intruder)**2) * (1. + relative_vel_ratio)
-    dyaw = - F_rep * math.sin(psi) / max(speed, 0.1)
-    dv = - F_rep * math.cos(psi)
-    dz = agent.pos[2] - other.pos[2]
-    dvz = params.y_z_intruder * math.tanh(dz / params.a_z) * math.exp(-(dij / params.l_z)**2)
-    return SwarmCommands(delta_course=dyaw, delta_speed=dv, delta_vz=dvz)
+    f_rep = params.y_intruder * math.exp(-(dij_c / params.l_intruder)**2) * (1. + params.a_intruder * relative_vel_ratio) / (1. + params.a_intruder)
+    a_bx = - f_rep * math.cos(psi)
+    a_by = - f_rep * math.sin(psi)
+    # vertical repulsion
+    delta_z = other.pos[2] - agent.pos[2]
+    a_z = - params.y_z_intruder * math.tanh(delta_z / params.d_z_intruder) * math.exp(-(dij_c / params.l_z_intruder)**2)
+    logger.debug(f'Intruder {other.name} -> {agent.name}: {relative_vel_ratio:0.2f} | {np.degrees(psi):0.2f} {np.degrees(psi_int):0.2f} | {delta_z:0.2f}')
+    logger.debug(f"  accel = [ {a_bx:0.3f}, {a_by:0.3f}, {a_z:0.3f} ]")
 
-def interaction_obstacle(agent: State, params: SwarmParams, obstacle: tuple[float, float] = None) -> SwarmCommands:
+    return SwarmAccel(a_bx=a_bx, a_by=a_by, a_z=a_z)
+
+def interaction_obstacle(agent: State, params: SwarmParams, obstacle: tuple[float, float] = None) -> SwarmAccel:
     ''' Interaction with an obstacle defined by a distance and relative orientation
     '''
-    cmd = SwarmCommands()
+    cmd = SwarmAccel()
     if obstacle is None:
         return cmd
 
+    # horizontal obstacles and walls
     dist, angle = obstacle
     speed = agent.get_speed_2d()
     collision_speed = speed * math.cos(angle)
-    #print(f'obs speed {speed:.2f}, {dist:.2f}, {collision_speed:.2}')
-    if collision_speed < 0.1:
-        return cmd # speed is too small or negative
-    tau = dist / collision_speed
-    fw = math.exp(-(tau / params.t_obs)**2)
-    ow = params.e1_obs * math.cos(angle) + params.e2_obs * math.cos(2. * angle)
-    F_obs = params.y_obs * (1. + ow) * fw
-    cmd.delta_course = F_obs * math.sin(angle) / max(speed, 0.1)
-    cmd.delta_speed = - F_obs * math.cos(angle)
-    #print(f'obs delta {np.degrees(cmd.delta_course):.2f}, {tau}, {fw}, {ow}')
+    logger.debug(f'Obstacle speed={speed:.2f}, dist={dist:.2f}, col={collision_speed:.2}')
+    f_obs = params.y_obs * math.exp(-(dist / params.l_obs)) * math.exp(params.y_v_obs * collision_speed / params.v0_obs) * anisotropic(params.a_obs, angle)
+    cmd.a_bx = - f_obs * math.cos(angle)
+    cmd.a_by = f_obs * math.sin(angle)
+    cmd.a_z = 0.
+    logger.debug(f"  accel = [ {cmd.a_bx:0.3f}, {cmd.a_by:0.3f} ]")
     return cmd
 
-def interaction_wall(agent: State, params: SwarmParams, wall: tuple[float, float] = None, z_min: float = None, z_max: float = None) -> SwarmCommands:
-    ''' Interaction with a wall defined by a distance and relative orientation
-        and with floor and ceiling
+def interaction_vertical_boundaries(agent: State, params: SwarmParams, z_min: float = None, z_max: float = None) -> SwarmAccel:
+    ''' Interaction with floor and ceiling
     '''
-    cmd = SwarmCommands()
-    if wall is not None:
-        dist, angle = wall
-        fw = math.exp(-(dist / params.l_w)**2)
-        ow = params.e1_w * math.cos(angle) + params.e2_w * math.cos(2. * angle)
-        cmd.delta_course = params.y_w * math.sin(angle) * (1. + ow) * fw
+    a_z = 0.
     if z_min is not None:
-        dz = agent.pos[2] - z_min
-        cmd.delta_vz += 2. * params.y_z_w / (1. + math.exp((dz - params.dz_w) / params.dz_w))
+        delta_z = agent.pos[2] - z_min
+        a_z += params.y_z_obs * math.exp(- delta_z / params.l_z_obs)
     if z_max is not None:
-        dz = z_max - agent.pos[2]
-        cmd.delta_vz +=  - 2. * params.y_z_w / (1. + math.exp((dz - params.dz_w) / params.dz_w))
-    #TODO a speed variation to slow down on obstacles ?
-    return cmd
+        delta_z = z_max - agent.pos[2]
+        a_z +=  - params.y_z_obs * math.exp( - delta_z / params.l_z_obs)
+    logger.debug(f"Vertical boundaries  accel = {a_z:0.3f}")
+    return SwarmAccel(a_bx=0., a_by=0., a_z=a_z)
 
 
 def compute_interactions(
@@ -317,48 +316,47 @@ def compute_interactions(
         params: SwarmParams,
         neighbors: list[State] = [],
         nb_influent: int = 1,
+        speed: float = 1.,
         direction: float = None,
         altitude: float = None,
         wall: tuple[float, float] = None,
         z_min: float = None,
         z_max: float = None,
         obstacles: list[(float, float)] = [],
-        intruders: list[State] = []) -> tuple[SwarmCommands, list[tuple[str, str]]]:
+        intruders: list[State] = []) -> tuple[SwarmAccel, list[tuple[str, str]]]:
     # closest wall distance
-    closest_wall = np.min(np.array([ w[0] for w in [wall] + obstacles if w is not None ]), initial=100.)
+    walls = obstacles
+    if wall is not None:
+        walls += [wall]
+    closest_wall = np.min(np.array([ w[0] for w in walls]), initial=100.)
     # social
     social = []
     for neighbor in neighbors:
-        social.append((agent.name, neighbor.name, interaction_social(agent, params, neighbor, dt=1., r_w=closest_wall)))
-    speed_2d = agent.get_speed_2d()
-    def compute_influence(x):
-        return math.sqrt(x.delta_speed**2 + (x.delta_course * speed_2d)**2 + x.delta_vz**2)
-        #return np.fabs(x.delta_course)
-    influential = sorted(social, key=lambda s: compute_influence(s[2]), reverse=True)
-    d_social = SwarmCommands()
+        social.append((agent.name, neighbor.name, interaction_social(agent, params, neighbor, nb_influent)))
+    influential = sorted(social, key=lambda s: s[2][1], reverse=True)
+    d_social = SwarmAccel()
     most_influentials = []
     for i, s in enumerate(influential):
         if i == nb_influent:
             break
         #print(f"Most influential for {s[0]}: {s[1]}")
         most_influentials.append((s[0], s[1]))
-        d_social += s[2]
-    # wall and borders
-    d_borders = interaction_wall(agent, params, wall, z_min, z_max)
+        d_social += s[2][0]
     # navigation
-    d_nav = interaction_nav(agent, params, direction, altitude)
+    d_nav = interaction_nav(agent, params, speed, direction, altitude)
     # intruders
-    d_intruders = SwarmCommands()
+    d_intruders = SwarmAccel()
     for intruder in intruders:
         d_intruders += interaction_intruder(agent, params, intruder)
     # obstacles
-    d_obstacles = SwarmCommands()
-    for obstacle in obstacles:
+    d_obstacles = SwarmAccel()
+    for obstacle in walls:
         d_obstacles += interaction_obstacle(agent, params, obstacle)
+    # vertical borders
+    d_borders = interaction_vertical_boundaries(agent, params, z_min, z_max)
 
-    cmd = d_social + d_borders + d_nav + d_intruders + d_obstacles
-    #print(f'  delta_yaw {np.degrees(delta_yaw):.2f} | s={np.degrees(dyaw_s):.2f}, w={np.degrees(dyaw_w):.2f}, n={np.degrees(dyaw_nav):.2f}, i={np.degrees(dyaw_i):.2f}')
-    #print(f'  delta_vz {delta_vz:.2f} | s={dvz_s:.2f}, w={dvz_w:.2f}, n={dvz_nav:.2f}, i={dvz_i:.2f}')
+    cmd = d_social + d_nav + d_intruders + d_obstacles + d_borders
+    logger.debug(f'Interactions accel = [ {cmd.a_bx:0.3f}, {cmd.a_by:0.3f}, {cmd.a_z:0.3f} ]')
     return cmd, most_influentials
 
 
