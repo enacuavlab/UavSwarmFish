@@ -83,8 +83,6 @@ class State:
     def get_delta_z(self, other: 'State') -> float:
         ''' Vertical position difference
         '''
-        if self.name=="1":
-            print(self.pos, other.pos)
         return (other.pos[2] - self.pos[2])
 
     def get_speed_2d(self) -> float:
