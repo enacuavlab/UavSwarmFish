@@ -1,4 +1,4 @@
-from swarmfish.swarm_control import SwarmParams
+from swarmfish.swarm_control import SwarmParams, SwarmAccel, State, NavParams
 from swarmfish.obstacles import PolygonObstacle
 import yaml
 import json
@@ -81,6 +81,39 @@ def load_polygons_from_json(file_name: str) -> list[PolygonObstacle]:
             f.close()
     return []
 
+def compute_speed_from_accel(cmd: SwarmAccel, state: State, nav_params: NavParams, dt: float, use_heading: bool = False) -> np.ndarray:
+    def saturate(cmd, increment, limit_min, limit_max):
+        if limit_max is not None and cmd > limit_max and increment > 0.:
+            #print(limit_max)
+            return limit_max
+        elif limit_min is not None and cmd < limit_min and increment < 0.:
+            return limit_min
+        else:
+            return cmd
+
+    ch = np.cos(state.get_course(use_heading))
+    sh = np.sin(state.get_course(use_heading))
+    if use_heading:
+        speed_incr = cmd.a_bx * dt
+        speed_cmd = saturate(state.get_speed_2d() + speed_incr, speed_incr, nav_params.speed_min, nav_params.speed_max)
+        vz_incr = cmd.a_z * dt
+        vz_cmd = saturate(state.get_vz() + vz_incr, vz_incr, nav_params.vz_min, nav_params.vz_max)
+        yaw_incr = cmd.a_by / max(state.get_speed_2d(), 0.1)
+        yaw_cmd = saturate(yaw_incr, yaw_incr, nav_params.yaw_min, nav_params.yaw_max)
+        return np.array([speed_cmd * ch, speed_cmd * sh, vz_cmd, yaw_cmd])
+    else:
+        # FIXME make a nicer bounding of speed
+        a_x = ch * cmd.a_bx - sh * cmd.a_by
+        a_y = sh * cmd.a_bx + ch * cmd.a_by
+        #print(state.name, a_x, a_y, cmd.a_bx, cmd.a_by, state.get_course(use_heading))
+        #vx_cmd = state.speed[0] + a_x * dt
+        #vy_cmd = state.speed[1] + a_y * dt
+        vx_cmd = saturate(state.speed[0] + a_x * dt, a_x, -nav_params.speed_max, nav_params.speed_max)
+        vy_cmd = saturate(state.speed[1] + a_y * dt, a_y, -nav_params.speed_max, nav_params.speed_max)
+        vz_incr = cmd.a_z * dt
+        vz_cmd = saturate(state.get_vz() + vz_incr, vz_incr, nav_params.vz_min, nav_params.vz_max)
+        yaw_cmd = 0. # FIXME track course ?
+        return np.array([vx_cmd, vy_cmd, vz_cmd, yaw_cmd])
 
 # data processing functions
 

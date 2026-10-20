@@ -52,11 +52,15 @@ class SwarmParams:
 
 @dataclass
 class NavParams:
-    # collective motion parameters
-    max_velocity: float = None
-    min_velocity: float = None
-    zmax: float = None
-    zmin: float = None
+    # nav limits
+    speed_min: float = None
+    speed_max: float = None
+    vz_min: float = None
+    vz_max: float = None
+    yaw_min: float = None
+    yaw_max: float = None
+    z_min: float = None
+    z_max: float = None
 
 
 def wrap_to_pi(angle) -> float:

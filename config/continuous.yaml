@@ -38,9 +38,15 @@ Agent:
     y_z_obs: 0.1
     l_z_obs: 1.0
 
+    use_heading: True
+
   NavParams:
-    max_velocity: 2.0
-    min_velocity: 0.
-    zmax: 15.
-    zmin: -2.
+    speed_min: 0.5
+    speed_max: 1.5
+    vz_min: -2.0
+    vz_max: 2.0
+    yaw_min: -1.
+    yaw_max: 1.
+    z_min: -2.
+    z_max: 15.
 
